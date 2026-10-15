@@ -1,5 +1,6 @@
 import requests
 import sqlite3
+from datetime import datetime
 
 
 # --------------------------------------------------
@@ -7,11 +8,13 @@ import sqlite3
 # Data Source: FDA openFDA Medical Device Adverse Event API
 # --------------------------------------------------
 
+
 # ---------------- DATABASE SETUP ----------------
 
 connection = sqlite3.connect("surgical_robotics.db")
 cursor = connection.cursor()
 
+# Create the table if this is a new database
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS adverse_events (
     report_number TEXT PRIMARY KEY,
@@ -20,9 +23,23 @@ CREATE TABLE IF NOT EXISTS adverse_events (
     product_problems TEXT,
     generic_name TEXT,
     brand_name TEXT,
-    manufacturer TEXT
+    manufacturer TEXT,
+    collected_at TEXT
 )
 """)
+
+# Check the existing database structure
+cursor.execute("PRAGMA table_info(adverse_events)")
+columns = [column[1] for column in cursor.fetchall()]
+
+# Upgrade an older database without deleting existing records
+if "collected_at" not in columns:
+    cursor.execute("""
+        ALTER TABLE adverse_events
+        ADD COLUMN collected_at TEXT
+    """)
+
+    print("Database upgraded: collected_at column added.")
 
 connection.commit()
 
@@ -33,7 +50,7 @@ url = "https://api.fda.gov/device/event.json"
 
 params = {
     "search": 'device.generic_name:robotic',
-    "limit": 10
+    "limit": 100
 }
 
 
@@ -56,6 +73,7 @@ exclude_terms = [
 ]
 
 
+print()
 print("Robotic-Assisted Surgical Device Adverse Event Tracker")
 print("Connecting to openFDA...")
 print()
@@ -64,7 +82,11 @@ print()
 # ---------------- API REQUEST ----------------
 
 try:
-    response = requests.get(url, params=params, timeout=30)
+    response = requests.get(
+        url,
+        params=params,
+        timeout=30
+    )
 
     print("Status Code:", response.status_code)
 
@@ -81,6 +103,11 @@ try:
         new_records = 0
         duplicate_records = 0
 
+        # Timestamp for this collection run
+        collection_time = datetime.now().isoformat(
+            timespec="seconds"
+        )
+
         # Examine every adverse event report
         for report in results:
 
@@ -89,12 +116,19 @@ try:
             if not devices:
                 continue
 
-            # Examine every device associated with the report
             for device in devices:
 
-                generic_name = device.get("generic_name", "")
-                brand_name = device.get("brand_name", "")
-                manufacturer = device.get("manufacturer_d_name", "")
+                generic_name = device.get(
+                    "generic_name", ""
+                )
+
+                brand_name = device.get(
+                    "brand_name", ""
+                )
+
+                manufacturer = device.get(
+                    "manufacturer_d_name", ""
+                )
 
                 combined_name = (
                         generic_name + " " + brand_name
@@ -130,8 +164,6 @@ try:
                         "product_problems", []
                     )
 
-                    # Convert the list of product problems
-                    # into a single string for SQLite
                     product_problems_text = ", ".join(
                         product_problems
                     )
@@ -146,9 +178,10 @@ try:
                         product_problems,
                         generic_name,
                         brand_name,
-                        manufacturer
+                        manufacturer,
+                        collected_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         report_number,
                         event_type if event_type else "N/A",
@@ -160,11 +193,10 @@ try:
                         brand_name
                         if brand_name else "N/A",
                         manufacturer
-                        if manufacturer else "N/A"
+                        if manufacturer else "N/A",
+                        collection_time
                     ))
 
-                    # rowcount tells us whether SQLite
-                    # actually inserted the record
                     if cursor.rowcount > 0:
                         new_records += 1
                         record_status = "NEW RECORD SAVED"
@@ -175,7 +207,6 @@ try:
                     # ---------------- DISPLAY RESULT ----------------
 
                     print("----- ROBOTIC SURGICAL REPORT -----")
-
                     print("Report Number:", report_number)
 
                     print(
@@ -212,37 +243,61 @@ try:
                         if manufacturer else "N/A"
                     )
 
-                    print("Database Status:", record_status)
+                    print(
+                        "Database Status:",
+                        record_status
+                    )
+
                     print()
 
-        # Save database changes
+        # Save everything
         connection.commit()
+
 
         # ---------------- DATABASE SUMMARY ----------------
 
-        cursor.execute(
-            "SELECT COUNT(*) FROM adverse_events"
-        )
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM adverse_events
+        """)
 
         total_database_records = cursor.fetchone()[0]
 
-        print("----------------------------------------")
+        print("=" * 50)
+        print("COLLECTION SUMMARY")
+        print("=" * 50)
+
+        print(
+            "Records received from API:",
+            len(results)
+        )
+
         print(
             "Relevant robotic surgical devices found:",
             relevant_count
         )
+
         print(
             "New records saved:",
             new_records
         )
+
         print(
             "Duplicate records skipped:",
             duplicate_records
         )
+
         print(
             "Total records currently in database:",
             total_database_records
         )
+
+        print(
+            "Collection timestamp:",
+            collection_time
+        )
+
+        print("=" * 50)
 
     else:
         print("Request failed.")
@@ -251,10 +306,25 @@ try:
 
 
 except requests.exceptions.RequestException as error:
-    print("An error occurred while connecting to openFDA:")
+
+    print(
+        "An error occurred while connecting to openFDA:"
+    )
+
+    print(error)
+
+
+except sqlite3.Error as error:
+
+    print(
+        "A database error occurred:"
+    )
+
     print(error)
 
 
 finally:
-    # Always close the database connection
+
     connection.close()
+    print()
+    print("Database connection closed.")
